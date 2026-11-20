@@ -45,6 +45,8 @@ from .symbols import (
     disambiguate_ids,
     package_symbol,
     resolve_context,
+    result_arity,
+    result_type_ref,
     signature_refs,
     symbols_for_file,
 )
@@ -201,6 +203,10 @@ def build_index(options: IndexOptions) -> IndexResult:
                         lexed=parsed_file.lexed,
                         body=body_span(decl),
                         signature_types=signature_refs(decl),
+                        param_types=tuple((param.name, param.type) for param in decl.params),
+                        field_types=tuple((field.name, field.type) for field in decl.fields),
+                        result_ref=result_type_ref(decl),
+                        result_arity=result_arity(decl),
                     )
                 )
                 symbols_per_file[parsed_file.rel_path] = (

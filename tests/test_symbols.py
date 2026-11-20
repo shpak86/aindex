@@ -13,7 +13,7 @@ from aindex.constants import (
     KIND_STRUCT,
     KIND_TEST,
 )
-from aindex.goparse import parse_source
+from aindex.goparse import RawDecl, parse_source
 from aindex.model import SymbolRecord, truncate_text
 from aindex.symbols import (
     body_span,
@@ -22,13 +22,14 @@ from aindex.symbols import (
     package_symbol,
     qualified_name_of,
     receiver_type_params,
+    result_arity,
+    result_type_ref,
     symbol_from_decl,
     symbol_id,
     symbol_kind,
     symbols_for_file,
 )
 from tests.support import (
-    API_GO,
     MODE_LINUX_GO,
     MODE_WINDOWS_GO,
     STORE_GO,
@@ -163,6 +164,56 @@ class BodySpanTest(unittest.TestCase):
     def test_declarations_without_a_body_have_no_span(self) -> None:
         parsed = parse_source(b"package p\n\nfunc Assembly()\n", "p/asm.go")
         self.assertIsNone(body_span(parsed.decls[0]))
+
+
+class ResultTypeRefTest(unittest.TestCase):
+    """Which declarations name exactly one project type, and how many values they return."""
+
+    def decl(self, source: str) -> RawDecl:
+        parsed = parse_source(source.encode("utf-8"), "p/p.go")
+        self.assertEqual(len(parsed.decls), 1)
+        return parsed.decls[0]
+
+    def test_plain_and_pointer_results_name_one_type(self) -> None:
+        for source, chain in (
+            ("func f() *ProxyServer { return nil }", "ProxyServer"),
+            ("func f() *memory { return nil }", "memory"),
+            ("func f() memory { return memory{} }", "memory"),
+            ("func f() http.Handler { return nil }", "http.Handler"),
+        ):
+            decl = self.decl(source)
+            ref = result_type_ref(decl)
+            self.assertIsNotNone(ref, source)
+            self.assertEqual(ref.chain, chain)
+            self.assertEqual(result_arity(decl), 1)
+
+    def test_multi_result_and_composite_shapes_give_no_type(self) -> None:
+        for source, arity in (
+            ("func f() error { return nil }", 1),
+            ("func f() string { return \"\" }", 1),
+            ("func f() []T { return nil }", 1),
+            ("func f() map[string]Item { return nil }", 1),
+            ("func f() chan int { return nil }", 1),
+            ("func f() func() error { return nil }", 1),
+            ("func f() (v *Item) { return }", 1),
+            ("func f() (Item, error) { return Item{}, nil }", 2),
+            ("func f() (a, b int) { return 0, 0 }", 2),
+            ("func f() { }", 0),
+        ):
+            decl = self.decl(source)
+            self.assertIsNone(result_type_ref(decl), source)
+            self.assertEqual(result_arity(decl), arity, source)
+
+    def test_real_declarations_from_the_demo(self) -> None:
+        parsed = parse_source(STORE_GO.encode("utf-8"), "internal/store/store.go")
+        by_name = {decl.name: decl for decl in parsed.decls}
+        new_ref = result_type_ref(by_name["New"])
+        self.assertIsNotNone(new_ref)
+        self.assertEqual(new_ref.chain, "memory")
+        self.assertEqual(result_arity(by_name["New"]), 1)
+        self.assertIsNone(result_type_ref(by_name["Get"]))
+        self.assertEqual(result_arity(by_name["Get"]), 2)
+        self.assertEqual(result_arity(by_name["Put"]), 0)
 
 
 class DisambiguateIdsTest(unittest.TestCase):

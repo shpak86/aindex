@@ -1,6 +1,6 @@
 """Command line interface.
 
-    python index_go_project.py [ROOT] [-o .ai-index] [--clean] [--ignore PATTERN] ...
+    python aindex-make [ROOT] [-o .ai-index] [--clean] [--ignore PATTERN] ...
 
 The command is quiet by default about anything but the numbers: it prints the
 location of the index, the run statistics and where to start reading, or the
@@ -29,7 +29,7 @@ MAX_REPORTED_BROKEN_FILES = 5
 def build_parser() -> argparse.ArgumentParser:
     """The CLI definition (also used by the tests)."""
     parser = argparse.ArgumentParser(
-        prog="index_go_project.py",
+        prog="aindex-make",
         description=(
             "Build a hierarchical, symbol-level index of a Go project "
             "(.ai-index/) for AI coding agents.  Pure Python, no dependencies."

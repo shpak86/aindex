@@ -25,14 +25,11 @@ from typing import Callable
 from .constants import (
     BLANK_IDENTIFIER,
     GENERATED_CODE_MARKERS,
-    GO_PREDECLARED,
     KIND_ALIAS,
     KIND_CONST,
-    KIND_FIELD,
     KIND_FUNC,
     KIND_INTERFACE,
     KIND_METHOD,
-    KIND_PACKAGE,
     KIND_STRUCT,
     KIND_TEST,
     KIND_TYPE,
@@ -46,7 +43,7 @@ from .constants import (
     TOK_STRING,
 )
 from .golex import Lexed, Token, base_type_name, lex
-from .model import ImportSpec, SymbolRecord, content_hash
+from .model import ImportSpec, content_hash
 
 
 @dataclass(slots=True)

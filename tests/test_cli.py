@@ -19,7 +19,6 @@ from tests.support import (
     GO_MOD,
     MAIN_GO,
     IndexTestCase,
-    index_dir_for,
     read_json,
     read_jsonl,
     read_text,
@@ -46,7 +45,7 @@ class ParserTest(unittest.TestCase):
 
     def test_prog_name_and_defaults(self) -> None:
         args = self.parser.parse_args([])
-        self.assertEqual(self.parser.prog, "index_go_project.py")
+        self.assertEqual(self.parser.prog, "aindex-make")
         self.assertEqual(args.root, ".")
         self.assertEqual(args.out, DEFAULT_OUTPUT_DIR)
         self.assertEqual(args.ignore, [])
@@ -94,7 +93,7 @@ class ParserTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as caught, contextlib.redirect_stdout(out):
             self.parser.parse_args(["--version"])
         self.assertEqual(caught.exception.code, 0)
-        self.assertEqual(out.getvalue().strip(), f"index_go_project.py {__version__}")
+        self.assertEqual(out.getvalue().strip(), f"aindex-make {__version__}")
 
     def test_help_documents_the_output_files(self) -> None:
         out = io.StringIO()
@@ -166,7 +165,7 @@ class ReportTest(IndexTestCase):
         self.assertEqual(lines[1], "  packages: 6")
         self.assertEqual(lines[2], "  files: 10")
         self.assertEqual(lines[3], "  symbols: 28")
-        self.assertEqual(lines[4], "  calls: 21 (resolved 6, unresolved 15)")
+        self.assertEqual(lines[4], "  calls: 21 (resolved 10, unresolved 11)")
         self.assertEqual(lines[5], "  parse errors: 2")
         self.assertTrue(lines[6].startswith("  duration: "))
         self.assertEqual(
@@ -234,7 +233,7 @@ class MainTest(IndexTestCase, RunCli):
         )
 
     def test_argv_defaults_to_sys_argv(self) -> None:
-        argv = ["index_go_project.py", self.root, "--quiet"]
+        argv = ["aindex-make", self.root, "--quiet"]
         with mock.patch.object(sys, "argv", argv):
             self.assertEqual(main(), EXIT_OK)
         self.assertTrue(os.path.isfile(os.path.join(self.index_dir, "stats.json")))
@@ -340,7 +339,7 @@ class CleanProjectTest(IndexTestCase, RunCli):
 class EntryPointTest(IndexTestCase):
     """The two documented ways to start the tool, run as real subprocesses."""
 
-    #: The checkout holding ``index_go_project.py`` and the ``aindex`` package.
+    #: The checkout holding ``aindex-make`` and the ``aindex`` package.
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     def run_python(self, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -353,7 +352,7 @@ class EntryPointTest(IndexTestCase):
         )
 
     def test_the_script_indexes_a_project(self) -> None:
-        completed = self.run_python("index_go_project.py", self.root, "--quiet")
+        completed = self.run_python("aindex-make", self.root, "--quiet")
         self.assertEqual(completed.returncode, EXIT_OK, completed.stderr)
         self.assertEqual(completed.stdout, "")
         self.assertEqual(completed.stderr, "")
@@ -362,7 +361,7 @@ class EntryPointTest(IndexTestCase):
     def test_python_m_aindex_reports_the_version(self) -> None:
         completed = self.run_python("-m", "aindex", "--version")
         self.assertEqual(completed.returncode, EXIT_OK, completed.stderr)
-        self.assertEqual(completed.stdout.strip(), f"index_go_project.py {__version__}")
+        self.assertEqual(completed.stdout.strip(), f"aindex-make {__version__}")
 
 
 if __name__ == "__main__":

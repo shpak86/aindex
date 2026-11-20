@@ -1,4 +1,4 @@
-"""``python3 -m aindex`` -- same CLI as ``index_go_project.py``."""
+"""``python3 -m aindex`` -- same CLI as ``aindex-make``."""
 
 from __future__ import annotations
 

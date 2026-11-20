@@ -293,6 +293,146 @@ INDEXED_FILES: tuple[str, ...] = (
 
 MODULE_PATH = "example.com/demo"
 
+#: A second, deliberately tiny project: the shape of the real-world case that
+#: motivated local type inference (a ``cmd/gateway`` main that builds a server
+#: and calls methods on it).  Kept apart from :data:`DEMO_FILES` so that the
+#: demo pins and the README examples stay untouched.
+GATEWAY_GO_MOD = """module example.com/gateway
+
+go 1.23.0
+"""
+
+GATEWAY_API_GO = """// Package api serves proxy traffic.
+package api
+
+import (
+\t"context"
+\t"sync"
+
+\t"example.com/gateway/internal/dial"
+)
+
+// Store is the read side of a server.
+type Store interface {
+\tGet(id string) (string, error)
+}
+
+// Config configures a Server.
+type Config struct {
+\tName string
+}
+
+// Server is one proxy server.
+type Server struct {
+\tcfg    Config
+\tstore  Store
+\tdialer *dial.Dialer
+\tmu     sync.Mutex
+}
+
+// NewServer returns a server for cfg.
+func NewServer(cfg Config) *Server {
+\treturn &Server{
+\t\tcfg:    cfg,
+\t\tdialer: dial.New(cfg.Name),
+\t}
+}
+
+// Name reports the configured name.
+func (s *Server) Name() string { return s.cfg.Name }
+
+// Dial opens an upstream connection through the dialer field.
+func (s *Server) Dial(ctx context.Context) error {
+\ts.mu.Lock()
+\tdefer s.mu.Unlock()
+\treturn s.dialer.Dial(ctx)
+}
+
+// Start serves traffic until ctx is cancelled.
+func (s *Server) Start(ctx context.Context) error {
+\treturn s.Open("health")
+}
+
+// Stop releases the listener.
+func (s *Server) Stop() {}
+
+// Open asks the store -- an interface field, so the call is dynamic.
+func (s *Server) Open(id string) (string, error) {
+\treturn s.store.Get(id)
+}
+"""
+
+GATEWAY_DIAL_GO = """// Package dial opens upstream connections.
+package dial
+
+import "context"
+
+// Dialer opens connections to one target.
+type Dialer struct {
+\ttarget string
+}
+
+// New returns a dialer for target.
+func New(target string) *Dialer {
+\treturn &Dialer{target: target}
+}
+
+// Dial opens one connection to the target.
+func (d *Dialer) Dial(ctx context.Context) error {
+\tif d.target == "" {
+\t\treturn nil
+\t}
+\treturn d.probe(ctx)
+}
+
+func (d *Dialer) probe(ctx context.Context) error { return nil }
+"""
+
+GATEWAY_MAIN_GO = """// Command gateway starts the proxy server.
+package main
+
+import (
+\t"context"
+\t"log"
+\t"sync"
+
+\t"example.com/gateway/internal/api"
+)
+
+func main() {
+\tvar wg sync.WaitGroup
+\tsrv := api.NewServer(api.Config{
+\t\tName: "gateway",
+\t})
+\tif err := srv.Dial(context.Background()); err != nil {
+\t\tlog.Printf("dial: %v", err)
+\t}
+\twg.Go(func() {
+\t\tif err := srv.Start(context.Background()); err != nil {
+\t\t\tlog.Printf("start: %v", err)
+\t\t}
+\t})
+\tlog.Println(srv.Name())
+\tstop(srv)
+\twg.Wait()
+}
+
+// stop shuts a server down; the *parameter* is what makes it resolvable.
+func stop(srv *api.Server) {
+\tsrv.Stop()
+}
+"""
+
+GATEWAY_FILES: dict[str, str] = {
+    "go.mod": GATEWAY_GO_MOD,
+    "cmd/gateway/main.go": GATEWAY_MAIN_GO,
+    "internal/api/api.go": GATEWAY_API_GO,
+    "internal/dial/dial.go": GATEWAY_DIAL_GO,
+}
+
+GATEWAY_MODULE_PATH = "example.com/gateway"
+
+
 
 
 def write_tree(root: str, files: Mapping[str, str]) -> str:

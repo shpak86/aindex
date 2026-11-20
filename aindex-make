@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Build a ``.ai-index/`` for a Go project -- offline, Python 3.11+, stdlib only.
 
-    python3 index_go_project.py ../my-go-project --clean
-    python3 index_go_project.py . -o .ai-index --json
+    python3 aindex-make ../my-go-project --clean
+    python3 aindex-make . -o .ai-index --json
 
 Run ``--help`` for the full option list; everything interesting lives in
 :mod:`aindex.cli`.

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from .calls import NameRef, ResolveContext, collect_signature_refs, dedupe_refs
+from .calls import NameRef, ResolveContext, collect_signature_refs, dedupe_refs, plain_type_ref
 from .constants import (
     DEFAULT_MAX_DOC_CHARS,
     KIND_CONST,
@@ -113,6 +113,48 @@ def signature_refs(decl: RawDecl) -> tuple[NameRef, ...]:
     for fragment in fragments:
         refs.extend(collect_signature_refs(fragment))
     return tuple(dedupe_refs(refs))
+
+
+def result_type_ref(decl: RawDecl) -> NameRef | None:
+    """The plain project type ``decl`` returns, or ``None`` when there is none.
+
+    ``*ProxyServer`` and ``memory`` name exactly one type; ``(Item, error)``,
+    ``[]Item``, ``map[string]Item``, ``chan int``, ``func()`` and a named result
+    such as ``(v *Item)`` do not -- the linker must not guess, so they give
+    ``None``.  The arity of a multi-result declaration is kept by
+    :func:`result_arity`, which is what tells ``v, err := pkg.Open()`` apart from
+    ``v := New()``.
+    """
+    fragment = decl.results.strip()
+    if fragment.startswith("(") and fragment.endswith(")"):
+        fragment = fragment[1:-1].strip()
+    return plain_type_ref(fragment)
+
+
+def result_arity(decl: RawDecl) -> int:
+    """How many values ``decl`` returns; ``0`` when it returns nothing.
+
+    Counts the top-level comma-separated entries of ``decl.results``, so
+    ``"(*ProxyServer, error)"`` is ``2`` while ``"[]int"`` and ``"map[a]b"``
+    stay ``1``.  Only used to prefer the unambiguous single-result form.
+    """
+    fragment = decl.results.strip()
+    if not fragment:
+        return 0
+    if fragment.startswith("(") and fragment.endswith(")"):
+        fragment = fragment[1:-1].strip()
+        if not fragment:
+            return 0
+    depth = 0
+    count = 1
+    for char in fragment:
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            count += 1
+    return count
 
 
 

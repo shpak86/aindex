@@ -19,6 +19,7 @@ from aindex.calls import (
     collect_type_refs,
     dedupe_refs,
     link_symbols,
+    plain_type_ref,
     resolve_ref,
 )
 from aindex.constants import (
@@ -30,12 +31,23 @@ from aindex.constants import (
 from aindex.golex import lex
 from aindex.goparse import parse_source
 from aindex.model import SymbolRecord
-from aindex.symbols import body_span, resolve_context, signature_refs, symbols_for_file
-from tests.support import IndexTestCase
+from aindex.symbols import (
+    body_span,
+    resolve_context,
+    result_arity,
+    result_type_ref,
+    signature_refs,
+    symbols_for_file,
+)
+from tests.support import GATEWAY_FILES, IndexTestCase
 
 STORE = "example.com/demo/internal/store"
 MAIN = "example.com/demo"
 API = "example.com/demo/internal/api"
+
+GATEWAY_MAIN = "example.com/gateway/cmd/gateway"
+GATEWAY_API = "example.com/gateway/internal/api"
+GATEWAY_DIAL = "example.com/gateway/internal/dial"
 
 
 def chains(refs: list[NameRef]) -> list[str]:
@@ -225,6 +237,17 @@ class ResolveRefTest(unittest.TestCase):
         self.index.add(
             record(f"struct:{API}:Handler", KIND_STRUCT, "Handler", package_path=API)
         )
+        self.index.add(
+            record(
+                f"method:{API}:Handler.Get",
+                KIND_METHOD,
+                "Get",
+                receiver="*Handler",
+                receiver_type="Handler",
+                package_path=API,
+                file="api.go",
+            )
+        )
         self.ctx = ResolveContext(package_path=STORE, imports={"api": API, "store": STORE})
 
     def ref(self, chain: str, ctx: ResolveContext | None = None) -> str:
@@ -232,6 +255,13 @@ class ResolveRefTest(unittest.TestCase):
         return resolve_ref(
             NameRef(chain, parts[0], parts[-1], 1), self.index, ctx or self.ctx
         )
+
+    def local_with_fields(
+        self, name: str, type_name: str, fields: dict[str, tuple[str, str]]
+    ) -> ResolveContext:
+        """A context whose ``name`` is a local of ``type_name``, field types included."""
+        self.index.fields[(STORE, type_name)] = fields
+        return ResolveContext(package_path=STORE, locals={name: (STORE, type_name)})
 
     def test_package_local_name(self) -> None:
         self.assertEqual(self.ref("New"), f"func:{STORE}:New")
@@ -263,7 +293,9 @@ class ResolveRefTest(unittest.TestCase):
         )
         self.assertEqual(self.ref("m.Get", ctx), f"method:{STORE}:memory.Get")
 
-    def test_chain_through_a_receiver_field_stays_unresolved(self) -> None:
+    def test_field_absent_from_the_index_stays_unresolved(self) -> None:
+        # ``index_fields`` gives no entry to a field of an external or interface
+        # type, so the chain is reported raw instead of being guessed at.
         ctx = ResolveContext(
             package_path=STORE, receiver_var="m", receiver_type="memory"
         )
@@ -282,6 +314,86 @@ class ResolveRefTest(unittest.TestCase):
     def test_imported_package_shadowed_by_a_type_parameter(self) -> None:
         ctx = ResolveContext(package_path=STORE, imports={"api": API}, type_params=frozenset({"api"}))
         self.assertEqual(self.ref("api.Handler", ctx), "")
+
+    def test_method_on_a_local_with_an_inferred_type(self) -> None:
+        ctx = ResolveContext(
+            package_path=STORE, locals={"m": (STORE, "memory")}
+        )
+        self.assertEqual(self.ref("m.Get", ctx), f"method:{STORE}:memory.Get")
+
+    def test_unknown_method_on_an_inferred_local(self) -> None:
+        ctx = ResolveContext(package_path=STORE, locals={"m": (STORE, "memory")})
+        self.assertEqual(self.ref("m.Missing", ctx), "")
+
+    def test_method_reached_through_a_field_of_an_inferred_local(self) -> None:
+        ctx = self.local_with_fields("m", "memory", {"inner": (API, "Handler")})
+        self.assertEqual(self.ref("m.inner.Get", ctx), f"method:{API}:Handler.Get")
+
+    def test_method_reached_through_a_field_of_the_receiver(self) -> None:
+        self.index.fields[(STORE, "memory")] = {"inner": (API, "Handler")}
+        ctx = ResolveContext(
+            package_path=STORE, receiver_var="m", receiver_type="memory"
+        )
+        self.assertEqual(self.ref("m.inner.Get", ctx), f"method:{API}:Handler.Get")
+
+    def test_unknown_method_on_the_field_type_stays_unresolved(self) -> None:
+        ctx = self.local_with_fields("m", "memory", {"inner": (API, "Handler")})
+        self.assertEqual(self.ref("m.inner.Nope", ctx), "")
+
+    def test_field_of_a_value_of_unknown_type_stays_unresolved(self) -> None:
+        # Nothing in the context says what ``x`` is, so its field is not followed.
+        ctx = self.local_with_fields("m", "memory", {"inner": (API, "Handler")})
+        self.assertEqual(self.ref("x.inner.Get", ctx), "")
+
+    def test_chain_deeper_than_one_field_stays_unresolved(self) -> None:
+        ctx = self.local_with_fields("m", "memory", {"inner": (API, "Handler")})
+        self.assertEqual(self.ref("m.inner.sub.Get", ctx), "")
+
+    def test_import_alias_wins_over_a_local_of_the_same_name(self) -> None:
+        ctx = ResolveContext(
+            package_path=STORE,
+            imports={"api": API},
+            locals={"api": (STORE, "memory")},
+        )
+        self.assertEqual(self.ref("api.Handler", ctx), f"struct:{API}:Handler")
+
+    def test_local_of_a_type_outside_the_index(self) -> None:
+        ctx = ResolveContext(package_path=STORE, locals={"g": ("example.com/other", "Gizmo")})
+        self.assertEqual(self.ref("g.Get", ctx), "")
+
+
+class PlainTypeRefTest(unittest.TestCase):
+    """``plain_type_ref`` is the gate every inferred type has to pass."""
+
+    def test_plain_names(self) -> None:
+        for text, chain in (
+            ("memory", "memory"),
+            ("*memory", "memory"),
+            ("api.Server", "api.Server"),
+            ("*api.Server", "api.Server"),
+            ("  *memory  ", "memory"),
+        ):
+            ref = plain_type_ref(text)
+            self.assertIsNotNone(ref, text)
+            self.assertEqual(ref.chain, chain)
+
+    def test_composite_and_external_shapes_are_rejected(self) -> None:
+        for text in (
+            "",
+            "[]Item",
+            "[3]Item",
+            "map[string]Item",
+            "chan int",
+            "<-chan int",
+            "func() error",
+            "A | B",
+            "~int",
+            "List[Item]",
+            "*List[Item]",
+            "(Item, error)",
+            "Item, error",
+        ):
+            self.assertIsNone(plain_type_ref(text), text)
 
 
 def links_for(
@@ -303,6 +415,10 @@ def links_for(
             parsed.lexed,
             body_span(decl),
             signature_refs(decl),
+            param_types=tuple((param.name, param.type) for param in decl.params),
+            field_types=tuple((field.name, field.type) for field in decl.fields),
+            result_ref=result_type_ref(decl),
+            result_arity=result_arity(decl),
         )
         for record_, decl in zip(records, parsed.decls)
     ]
@@ -366,6 +482,253 @@ func makeThing() Thing { return Thing{} }
         self.assertEqual(get.unresolved_calls, [])
 
 
+P = "example.com/p"
+NEW = f"func:{P}:New"
+OPEN = f"func:{P}:Open"
+NEW_FILE = f"func:{P}:NewFile"
+GET = f"method:{P}:memory.Get"
+PUT = f"method:{P}:memory.Put"
+FIELD_CALLS = f"method:{P}:wrapper.fieldCalls"
+
+
+class LocalTypeInferenceTest(unittest.TestCase):
+    """``x.Method()`` resolves exactly when ``x`` has one plainly known project type.
+
+    Everything goes through :func:`link_symbols`, so the inference in
+    ``calls.py`` and the types it is fed from ``symbols.py`` are tested together.
+    """
+
+    SOURCE = """package p
+
+import (
+\t"os"
+\t"sync"
+)
+
+// memory keeps items in memory.
+type memory struct {
+\tmu sync.Mutex
+}
+
+func (m *memory) Get() string { return "" }
+
+func (m *memory) Put(item string) {}
+
+// other exists only to give one name two candidate types.
+type other struct{}
+
+func (o *other) Get() string { return "" }
+
+// Holder is an interface, so dispatch through it is dynamic.
+type Holder interface {
+\tGet() string
+}
+
+// wrapper holds one field of every shape the field index has to judge.
+type wrapper struct {
+\tinner  *memory
+\tmu     sync.Mutex
+\tholder Holder
+\tlink   *wrapper
+}
+
+// New returns one value, so the result types the variable.
+func New(name string) *memory { return &memory{} }
+
+// Open returns two values; the pair is not attributed to one name.
+func Open() (*memory, error) { return &memory{}, nil }
+
+// NewFile returns a type outside the project.
+func NewFile() *os.File { return nil }
+
+func callerShortVar() {
+\titems := New("answer")
+\titems.Get()
+}
+
+func callerVar() {
+\tvar ptr *memory
+\tptr.Get()
+\tptr.mu.Lock()
+\tvar value memory
+\tvalue.Put("v")
+}
+
+func callerLiteral() {
+\tdirect := memory{}
+\tdirect.Get()
+\taddressed := &memory{}
+\taddressed.Put("a")
+}
+
+func callerNew() {
+\titems := new(memory)
+\titems.Get()
+}
+
+func callerParam(m *memory) {
+\tm.Get()
+}
+
+func callerMultiline() {
+\titems := New(
+\t\t"answer",
+\t)
+\titems.Get()
+}
+
+func callerClosure() {
+\titems := New("answer")
+\trun := func() {
+\t\titems.Get()
+\t}
+\trun()
+}
+
+func callerArityTwo() {
+\titems, err := Open()
+\titems.Get()
+\t_ = err
+}
+
+func callerInterface(h Holder) {
+\th.Get()
+}
+
+func callerExternal() {
+\tfile := NewFile()
+\tfile.Name()
+}
+
+func callerDisputed() {
+\titems := New("answer")
+\titems.Get()
+\t{
+\t\titems := &other{}
+\t\titems.Get()
+\t}
+}
+
+func (w *wrapper) fieldCalls() {
+\tw.inner.Get()
+\tw.inner.Put("x")
+\tw.inner.Missing()
+\tw.mu.Lock()
+\tw.holder.Get()
+\tw.link.inner.Get()
+}
+
+func callerFieldLocal() {
+\titems := &wrapper{}
+\titems.inner.Get()
+}
+
+func callerFieldParam(w *wrapper) {
+\tw.inner.Get()
+}
+"""
+
+    def link(self, name: str) -> SymbolRecord:
+        """Link the whole source and return the record called ``name``."""
+        links, index, records = links_for(self.SOURCE)
+        link_symbols(links, index)
+        self.assertIn(name, [record_.name for record_ in records])
+        return next(record_ for record_ in records if record_.name == name)
+
+    # -- the resolvable shapes --------------------------------------------
+    def test_single_result_call_types_the_variable(self) -> None:
+        caller = self.link("callerShortVar")
+        self.assertEqual(caller.calls, [NEW, GET])
+        self.assertEqual(caller.unresolved_calls, [])
+
+    def test_var_declarations_type_the_variable(self) -> None:
+        caller = self.link("callerVar")
+        self.assertEqual(caller.calls, [GET, PUT])
+        # ``ptr.mu.Lock()`` reaches through a field no project type backs.
+        self.assertEqual(caller.unresolved_calls, ["ptr.mu.Lock"])
+
+    def test_composite_literals_type_the_variable(self) -> None:
+        caller = self.link("callerLiteral")
+        self.assertEqual(caller.calls, [GET, PUT])
+        self.assertEqual(caller.unresolved_calls, [])
+
+    def test_new_builtin_types_the_variable(self) -> None:
+        # ``new`` is predeclared, so it is not a call site of its own.
+        caller = self.link("callerNew")
+        self.assertEqual(caller.calls, [GET])
+        self.assertEqual(caller.unresolved_calls, [])
+
+    def test_typed_parameter_types_the_variable(self) -> None:
+        caller = self.link("callerParam")
+        self.assertEqual(caller.calls, [GET])
+        self.assertEqual(caller.unresolved_calls, [])
+
+    def test_argument_line_breaks_do_not_hide_the_constructor(self) -> None:
+        caller = self.link("callerMultiline")
+        self.assertEqual(caller.calls, [NEW, GET])
+        self.assertEqual(caller.unresolved_calls, [])
+
+    def test_inferred_variable_works_from_inside_a_closure(self) -> None:
+        caller = self.link("callerClosure")
+        self.assertEqual(caller.calls, [NEW, GET])
+        # The closure value itself is still a call the linker cannot follow.
+        self.assertEqual(caller.unresolved_calls, ["run"])
+
+    # -- the shapes that must stay unresolved ------------------------------
+    def test_two_results_leave_the_variable_unknown(self) -> None:
+        caller = self.link("callerArityTwo")
+        self.assertEqual(caller.calls, [OPEN])
+        self.assertEqual(caller.unresolved_calls, ["items.Get"])
+
+    def test_interface_parameter_is_not_attributed_to_one_symbol(self) -> None:
+        caller = self.link("callerInterface")
+        self.assertEqual(caller.calls, [])
+        self.assertEqual(caller.unresolved_calls, ["h.Get"])
+
+    def test_external_type_is_not_inferred(self) -> None:
+        caller = self.link("callerExternal")
+        self.assertEqual(caller.calls, [NEW_FILE])
+        self.assertEqual(caller.unresolved_calls, ["file.Name"])
+
+    def test_one_name_with_two_inferred_types_is_dropped(self) -> None:
+        caller = self.link("callerDisputed")
+        self.assertEqual(caller.calls, [NEW])
+        self.assertEqual(caller.unresolved_calls, ["items.Get"])
+
+    # -- calls reached through a struct field ------------------------------
+    def test_field_of_a_plain_project_type_is_followed(self) -> None:
+        caller = self.link("fieldCalls")
+        self.assertEqual(caller.calls, [GET, PUT])
+        # An interface field (``holder``), an external one (``mu``), a method the
+        # field type does not have and a chain two fields deep all stay raw.
+        self.assertEqual(
+            caller.unresolved_calls,
+            ["w.holder.Get", "w.inner.Missing", "w.link.inner.Get", "w.mu.Lock"],
+        )
+
+    def test_field_of_a_local_and_of_a_parameter_are_followed(self) -> None:
+        local = self.link("callerFieldLocal")
+        self.assertEqual(local.calls, [GET])
+        self.assertEqual(local.unresolved_calls, [])
+        param = self.link("callerFieldParam")
+        self.assertEqual(param.calls, [GET])
+        self.assertEqual(param.unresolved_calls, [])
+
+    def test_only_plain_concrete_project_fields_are_indexed(self) -> None:
+        links, index, _ = links_for(self.SOURCE)
+        link_symbols(links, index)
+        self.assertEqual(
+            index.fields[(P, "wrapper")],
+            {"inner": (P, "memory"), "link": (P, "wrapper")},
+        )
+        # ``memory`` holds only a ``sync.Mutex``, so it gets no entry at all.
+        self.assertNotIn((P, "memory"), index.fields)
+
+    def test_field_call_becomes_a_reverse_edge(self) -> None:
+        get = self.link("Get")
+        self.assertIn(FIELD_CALLS, get.callers)
+
+
 class DemoCallGraphTest(IndexTestCase):
     """The rules again, this time through the whole pipeline on the demo project."""
 
@@ -381,9 +744,14 @@ class DemoCallGraphTest(IndexTestCase):
     def test_imported_call_and_cross_package_callers(self) -> None:
         run = self.symbol(f"func:{MAIN}:run")
         new = self.symbol(f"func:{STORE}:New")
-        self.assertEqual(run.calls, [f"func:{STORE}:New"])
+        self.assertEqual(
+            run.calls,
+            [f"func:{STORE}:New", f"method:{STORE}:memory.Get"],
+        )
         self.assertEqual(run.types, [f"struct:{STORE}:Item"])
-        self.assertEqual(run.unresolved_calls, ["items.Get"])
+        # ``items.Get()`` now resolves: ``items`` is the value ``store.New``
+        # returns, a plain ``*memory`` -- see the local type inference.
+        self.assertEqual(run.unresolved_calls, [])
         self.assertEqual(
             new.callers,
             [f"func:{MAIN}:run", f"test:{STORE}:TestMemoryGet"],
@@ -420,7 +788,10 @@ class DemoCallGraphTest(IndexTestCase):
 
     def test_external_test_package_calls_the_package_under_test(self) -> None:
         test = self.symbol(f"test:{API}_test:TestHandlerGet")
-        self.assertEqual(test.calls, [f"func:{API}:NewHandler"])
+        self.assertEqual(
+            test.calls,
+            [f"func:{API}:NewHandler", f"method:{API}:Handler.Get"],
+        )
         self.assertIn("t.Fatalf", test.unresolved_calls)
 
     def test_stats_match_the_symbol_records(self) -> None:
@@ -436,6 +807,76 @@ class DemoCallGraphTest(IndexTestCase):
         )
         self.assertEqual(stats.calls, stats.resolved_calls + stats.unresolved_calls)
         self.assertLess(stats.resolved_calls, stats.unresolved_calls)
+
+
+class GatewayCallGraphTest(IndexTestCase):
+    """A mini ``centaur``: the case that motivated the local type inference.
+
+    ``main`` builds a server from another package (over several lines, inside a
+    closure) and calls methods on it; before the inference every one of those
+    calls was a raw name in ``unresolved_calls``.
+    """
+
+    files = GATEWAY_FILES
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.result = self.build()
+
+    def test_constructor_result_is_typed_across_packages(self) -> None:
+        main = self.symbol(f"func:{GATEWAY_MAIN}:main")
+        self.assertEqual(
+            main.calls,
+            [
+                f"func:{GATEWAY_MAIN}:stop",
+                f"func:{GATEWAY_API}:NewServer",
+                f"method:{GATEWAY_API}:Server.Dial",
+                f"method:{GATEWAY_API}:Server.Name",
+                f"method:{GATEWAY_API}:Server.Start",
+            ],
+        )
+        # ``api.Config``'s multiline literal and the closure around ``srv.Start``
+        # do not stop the inference; stdlib and ``sync.WaitGroup`` still do.
+        self.assertEqual(
+            main.unresolved_calls,
+            ["context.Background", "log.Printf", "log.Println", "wg.Go", "wg.Wait"],
+        )
+
+    def test_project_typed_field_is_followed_into_another_package(self) -> None:
+        # ``Server.dialer`` is ``*dial.Dialer``: the field type is resolved in the
+        # context of the struct that declares it, so the call lands in ``dial``.
+        dial = self.symbol(f"method:{GATEWAY_API}:Server.Dial")
+        self.assertEqual(dial.calls, [f"method:{GATEWAY_DIAL}:Dialer.Dial"])
+        # ``s.mu`` is a stdlib field, so its calls stay raw names.
+        self.assertEqual(dial.unresolved_calls, ["s.mu.Lock", "s.mu.Unlock"])
+
+    def test_field_call_creates_the_reverse_edge(self) -> None:
+        dialer = self.symbol(f"method:{GATEWAY_DIAL}:Dialer.Dial")
+        self.assertEqual(dialer.callers, [f"method:{GATEWAY_API}:Server.Dial"])
+        self.assertEqual(dialer.calls, [f"method:{GATEWAY_DIAL}:Dialer.probe"])
+
+    def test_constructor_filling_a_field_of_another_package(self) -> None:
+        new_server = self.symbol(f"func:{GATEWAY_API}:NewServer")
+        self.assertEqual(new_server.calls, [f"func:{GATEWAY_DIAL}:New"])
+
+    def test_start_callers_point_back_at_the_gateway_main(self) -> None:
+        start = self.symbol(f"method:{GATEWAY_API}:Server.Start")
+        self.assertEqual(start.callers, [f"func:{GATEWAY_MAIN}:main"])
+
+    def test_typed_parameter_types_the_body(self) -> None:
+        stop = self.symbol(f"func:{GATEWAY_MAIN}:stop")
+        self.assertEqual(stop.calls, [f"method:{GATEWAY_API}:Server.Stop"])
+        self.assertEqual(stop.unresolved_calls, [])
+
+    def test_interface_field_dispatch_stays_unresolved(self) -> None:
+        open_ = self.symbol(f"method:{GATEWAY_API}:Server.Open")
+        self.assertEqual(open_.calls, [])
+        self.assertEqual(open_.unresolved_calls, ["s.store.Get"])
+
+    def test_stats_summarise_the_gateway_run(self) -> None:
+        stats = self.result.stats
+        self.assertEqual((stats.resolved_calls, stats.unresolved_calls), (10, 8))
+        self.assertEqual(stats.calls, stats.resolved_calls + stats.unresolved_calls)
 
 
 if __name__ == "__main__":

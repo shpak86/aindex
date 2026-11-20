@@ -21,7 +21,7 @@ from aindex.render import (
     render_project,
     write_markdown,
 )
-from aindex.constants import KIND_INTERFACE, KIND_METHOD, KIND_STRUCT
+from aindex.constants import KIND_METHOD, KIND_STRUCT
 from tests.support import IndexTestCase, read_text
 
 

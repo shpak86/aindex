@@ -26,7 +26,6 @@ import os
 from typing import Iterable, Mapping
 
 from .constants import (
-    DEFAULT_MAX_DOC_CHARS,
     KIND_ALIAS,
     KIND_CONST,
     KIND_FIELD,

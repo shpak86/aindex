@@ -12,18 +12,15 @@ from aindex.pipeline import (
     BACKEND_PYTHON,
     MISSING_PACKAGE_ERROR,
     IndexOptions,
-    build_index,
     run,
     timestamp,
     write_index,
 )
-from aindex.render import package_pages
 from tests.support import (
     IGNORED_FILES,
     INDEXED_FILES,
     MODULE_PATH,
     IndexTestCase,
-    index_dir_for,
     read_json,
     read_jsonl,
     read_text,
@@ -155,7 +152,7 @@ class BuildIndexTest(IndexTestCase):
         self.assertEqual(stats.ignored_files, 1)
         self.assertGreaterEqual(stats.duration_seconds, 0.0)
         self.assertEqual(stats.calls, stats.resolved_calls + stats.unresolved_calls)
-        self.assertEqual((stats.resolved_calls, stats.unresolved_calls), (6, 15))
+        self.assertEqual((stats.resolved_calls, stats.unresolved_calls), (10, 11))
         self.assertRegex(stats.generated_at, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
     def test_symbol_ids_are_unique(self) -> None:
@@ -302,7 +299,7 @@ class OptionVariationTest(IndexTestCase):
     def test_excluding_tests_also_changes_the_call_counts(self) -> None:
         result = self.build(include_tests=False)
         self.assertEqual(
-            (result.stats.resolved_calls, result.stats.unresolved_calls), (4, 8)
+            (result.stats.resolved_calls, result.stats.unresolved_calls), (5, 7)
         )
 
     def test_extra_ignore_patterns_drop_directories(self) -> None:
@@ -504,14 +501,20 @@ class IdempotencyTest(IndexTestCase):
 
     def test_rewriting_the_same_result_is_idempotent(self) -> None:
         """Every file except ``stats.json`` is a pure function of the result."""
-        result = self.build()
-        first = write_index(result, self.index_dir)
-        snapshot = {path: read_text(path) for path in first}
-        second = write_index(self.build(), self.index_dir)
+        # Both builds run under a frozen clock: PROJECT.md prints the duration,
+        # so a real reading would differ by a rounding tick on a loaded machine.
+        clock = [0.0, 1.5] * 2
+        with mock.patch.object(
+            pipeline.time, "perf_counter", side_effect=list(clock)
+        ):
+            result = self.build()
+            first = write_index(result, self.index_dir)
+            snapshot = {path: read_text(path) for path in first}
+            second = write_index(self.build(), self.index_dir)
         self.assertEqual(first, second)
         for path in first:
             if os.path.basename(path) == "stats.json":
-                continue  # duration_seconds differs between runs
+                continue  # stats.json is the run's own wall-clock report
             self.assertEqual(snapshot[path], read_text(path), path)
 
 

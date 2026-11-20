@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+"""Query a ``.ai-index/`` written by ``aindex-make`` -- read-only, stdlib only.
+
+    python3 aindex-query overview
+    python3 aindex-query --root ../my-go-project search "parse config"
+    python3 aindex-query read internal/store/store.go --start 20 --end 40
+
+Run ``--help`` for the command list; everything interesting lives in
+:mod:`aindex_query.cli`.  This file is the CLI's entry point: it only bootstraps
+``sys.path`` so the script works straight from a checkout, without installing.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# Allow running this file straight from a checkout, without installing.
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+from aindex_query.cli import main  # noqa: E402  (must follow the sys.path tweak)
+
+if __name__ == "__main__":
+    sys.exit(main())

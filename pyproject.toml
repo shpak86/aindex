@@ -1,0 +1,49 @@
+# Packaging metadata for aindex -- the offline Go project indexer and its query
+# CLI.  Nothing here is imported at runtime: the tool itself stays pure Python
+# 3.11+ standard library.  `pipx install` / `pip` are only the couriers.
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aindex-go-index"
+dynamic = ["version"]
+description = "Offline, dependency-free index of a Go project (.ai-index/) for AI coding agents"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Anton Shpakovsky", email = "shpakovsky86@gmail.com" }]
+keywords = ["go", "golang", "code-index", "static-analysis", "ai-agents", "cli"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = []
+
+[project.scripts]
+aindex-make = "aindex.cli:main"
+aindex-query = "aindex_query.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/shpak86/aindex"
+Repository = "https://github.com/shpak86/aindex"
+
+[tool.setuptools]
+# Listed explicitly: automatic discovery would trip over go/, tests/ and
+# .scratch/, and the checkout's aindex-make / aindex-query launchers must not
+# travel in the wheel -- the console scripts above replace them.
+packages = ["aindex", "aindex_query"]
+
+[tool.setuptools.dynamic]
+# Single source of truth for the version: aindex/__init__.py.
+version = { attr = "aindex.__version__" }
